@@ -5304,3 +5304,36 @@ async def test_a_skipped_validation_passes_the_upstreams_result_through_unchange
 
     assert isinstance(result, CallToolResult)
     assert result.structured_content == {"n": "not-an-integer"}
+
+
+class TestMCPClientExplicitTransport:
+    """A caller-supplied transport owns TLS, so the factory must not resolve LiteLLM's SSL config."""
+
+    @pytest.mark.asyncio
+    async def test_explicit_transport_skips_ssl_configuration(self):
+        async def respond(request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, text="ok")
+
+        client: Final = MCPClient(server_url="https://example.com/mcp")
+        with patch(
+            "litellm.mcp_client.client.get_ssl_configuration",
+            side_effect=RuntimeError("ssl-config-failure"),
+        ) as ssl_lookup:
+            http_client: Final = client._create_httpx_client_factory(transport=httpx2.MockTransport(respond))()
+        try:
+            ssl_lookup.assert_not_called()
+            response: Final = await http_client.get(client.server_url)
+            assert response.text == "ok"
+        finally:
+            await http_client.aclose()
+
+    def test_no_transport_still_resolves_ssl_configuration(self):
+        client: Final = MCPClient(server_url="https://example.com/mcp")
+        with (
+            patch(
+                "litellm.mcp_client.client.get_ssl_configuration",
+                side_effect=RuntimeError("ssl-config-failure"),
+            ),
+            pytest.raises(RuntimeError, match="ssl-config-failure"),
+        ):
+            client._create_httpx_client_factory()()
